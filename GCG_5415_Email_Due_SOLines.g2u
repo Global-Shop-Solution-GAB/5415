@@ -1,0 +1,227 @@
+Program.Sub.Preflight.Start
+v.Global.sSenderEmail.Declare
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'BN, Mar 1st, 2019
+'Customer:
+'Specs: Send out email daily at 2pm to Sales Persons their Sales Order Lines having Item Promise Date <= Current Date
+'Email body content:
+'Sales Order Line, Item Promise Date, Customer Number, Part, Qty BO
+'The email also attach a csv file.
+'The script will be attached to the Task Scheduler an run Daily at 2pm
+
+'Select Sales Order Lines with Date Item Promise <= Current Date, order by Date Item Promise Desc
+'Add Sales Person emails from SalesPersons.Email
+'Filter by Order_Header.SalesPerson and email <> '' to get distinct SalesPerson
+'Loop, each Sales Person, set filter, check valid email address, build body, send email
+
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+	
+	f.ODBC.Connection!conx.OpenCompanyConnection(600)
+	'Check Default sender email address
+	f.Intrinsic.Control.CallSub("Check_Default")
+	
+	'Check things then call Process
+	f.Intrinsic.Control.CallSub("Process")	
+	
+	'Unload
+	f.Intrinsic.Control.CallSub("Unload")
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub("Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.UnLoad.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+
+	F.Intrinsic.Control.If(V.ODBC.conx.State,=,1)
+		F.ODBC.Connection!conx.close
+	F.Intrinsic.Control.EndIf
+	
+	f.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End	
+F.Intrinsic.Control.EndTry
+Program.Sub.UnLoad.End
+
+Program.Sub.Process.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+	v.Local.shold.Declare	
+
+	v.Local.sSalesPersonEmail.Declare
+	v.Local.sSalesPerson.Declare
+	v.Local.sSalesPersonWithInvalidEmail.Declare
+	v.Local.sSalesPersonWithoutEmail.Declare
+	v.Local.sSalesPersonName.Declare
+
+	v.Local.sSOLine.Declare
+	v.Local.sCustomer.Declare
+	v.Local.sPart.Declare
+	v.Local.sQtyBO.Declare
+	v.Local.sItemPromiseDate.Declare
+	v.Local.sLine.Declare
+	v.Local.sBody.Declare
+	v.Local.sSubject.Declare
+	v.Local.sFilter.Declare
+	v.Local.sProjectPath.Declare
+	v.Local.sFilePath.Declare
+
+	v.Local.sCsvContent.Declare
+	v.Local.sCsvLine.Declare
+	
+	v.Local.iBody.Declare		
+	v.Local.iCnt.Declare
+	
+	v.Local.bValidEmail.Declare	
+	
+	'Sales Order Line, Item Promise Date, Customer Number, Part, Qty BO
+	f.Intrinsic.String.Build("{0}\Custom\5415",v.Caller.BusintDir,v.Local.sProjectPath)
+	
+	f.Data.DataTable.CreateFromSQL("dtSO","conx","select SL.ORDER_NO + '-' +  Left(SL.RECORD_NO,3) as SOLINE, sl.PART, sl.QTY_BO, sl.DATE_ITEM_PROM, so.CUSTOMER, so.SALESPERSON,'' as Email,'' as Name FROM V_ORDER_HEADER SO LEFT OUTER JOIN V_ORDER_LINES SL ON SO.ORDER_NO = SL.ORDER_NO WHERE sl.DATE_ITEM_PROM <= CURDATE() AND sl.PART <> '' AND sl.QTY_BO > 0 ORDER BY sl.DATE_ITEM_PROM",True)
+	'If no order lines due, unload
+	f.Intrinsic.Control.If(v.DataTable.dtSO.RowCount,=,0)
+		f.Intrinsic.Control.CallSub("Unload")
+	f.Intrinsic.Control.EndIf
+	
+	'Populate Emails
+	f.Data.Dictionary.CreateFromSQL("EmailsDict","conx","Select ID, Email from SALESPERSONS where ltrim(rtrim(Email)) <> ''")
+	f.Data.Dictionary.SetDefaultReturn("EmailsDict","")
+	f.Data.DataTable.FillFromDictionary("dtSO","EmailsDict","SalesPerson","Email")
+	
+	'Populate Names
+	f.Data.Dictionary.CreateFromSQL("NameDict","conx","Select ID, Name from SALESPERSONS")
+	f.Data.Dictionary.SetDefaultReturn("NameDict","")
+	f.Data.DataTable.FillFromDictionary("dtSO","NameDict","SalesPerson","Name")
+	
+	'Filter only Sales Person having emails and get distinct Sales Person with email address
+	f.Data.DataView.Create("dtSO","dvSO",22,"Email <> ''","")
+	f.Data.DataView.ToDataTableDistinct("dtSO","dvSO","SalesPersonWithEmail","SalesPerson",True)	
+
+	v.Local.sSalesPersonWithInvalidEmail.Set("Sales Person With Invalid Email: ")
+	f.Intrinsic.Control.For(v.Local.iCnt,0,v.DataTable.SalesPersonWithEmail.RowCount--,1)
+		v.Local.sSalesPerson.Set(v.DataTable.SalesPersonWithEmail(v.Local.iCnt).SalesPerson!FieldValString)
+		v.Local.sSalesPersonEmail.Set(v.Dictionary.EmailsDict![v.Local.sSalesPerson])
+		v.Local.sSalesPersonName.Set(v.Dictionary.NameDict![v.Local.sSalesPerson])
+		f.Global.Messaging.IsAddressValid(v.Local.sSalesPersonEmail,v.Local.bValidEmail)
+		f.Intrinsic.Control.If(v.Local.bValidEmail)	
+			f.Intrinsic.String.Build("SALESPERSON = '{0}'",v.Local.sSalesPerson,v.Local.sFilter)
+			f.Data.DataView.SetFilter("dtSO","dvSO",v.Local.sFilter)
+			'Build Title
+			v.Local.sBody.Set("")
+			v.Local.sCsvContent.Set("Order Line,Promise Date,Customer,Part,BO Qty")
+			
+			f.Intrinsic.String.RPad("Order Line"," ",50,v.Local.sHold)
+			f.Intrinsic.String.Build("{0}{1}",v.Local.sBody,v.Local.sHold,v.Local.sBody)
+			
+			f.Intrinsic.String.RPad("Promise Date"," ",50,v.Local.sHold)
+			f.Intrinsic.String.Build("{0}{1}",v.Local.sBody,v.Local.sHold,v.Local.sBody)
+			
+			f.Intrinsic.String.RPad("Customer"," ",50,v.Local.sHold)
+			f.Intrinsic.String.Build("{0}{1}",v.Local.sBody,v.Local.sHold,v.Local.sBody)
+			
+			f.Intrinsic.String.RPad("Part"," ",50,v.Local.sHold)
+			f.Intrinsic.String.Build("{0}{1}",v.Local.sBody,v.Local.sHold,v.Local.sBody)
+
+			f.Intrinsic.String.RPad("BO Qty"," ",50,v.Local.sHold)
+			f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sBody,v.Local.sHold,v.Ambient.NewLine,v.Local.sBody)	
+
+			f.Intrinsic.Control.For(v.Local.iBody,0,v.DataView.dtSO!dvSO.RowCount--,1)
+				
+				v.Local.sSOLine.Set(v.DataView.dtSO!dvSO(v.Local.iBody).SOLine!FieldValString)
+				v.Local.sCsvLine.Set(v.Local.sSOLine)
+				f.Intrinsic.String.RPad(v.Local.sSOLine," ",50,v.Local.sSOLine)
+				
+				f.Intrinsic.String.Format(v.DataView.dtSO!dvSO(v.Local.iBody).DATE_ITEM_PROM!FieldValString,"MM-DD-YYYY",v.Local.sItemPromiseDate)
+				f.Intrinsic.String.Build("{0},{1}",v.Local.sCsvLine,v.Local.sItemPromiseDate,v.Local.sCsvLine)
+				f.Intrinsic.String.RPad(v.Local.sItemPromiseDate," ",50,v.Local.sItemPromiseDate)				
+				
+				v.Local.sCustomer.Set(v.DataView.dtSO!dvSO(v.Local.iBody).Customer!FieldValString)	
+				f.Intrinsic.String.Build("{0},{1}",v.Local.sCsvLine,v.Local.sCustomer,v.Local.sCsvLine)
+				f.Intrinsic.String.RPad(v.Local.sCustomer," ",50,v.Local.sCustomer)
+				
+				v.Local.sPart.Set(v.DataView.dtSO!dvSO(v.Local.iBody).Part!FieldValString)	
+				f.Intrinsic.String.Build("{0},{1}",v.Local.sCsvLine,v.Local.sPart,v.Local.sCsvLine)
+				f.Intrinsic.String.RPad(v.Local.sPart," ",50,v.Local.sPart)
+				
+				f.Intrinsic.String.Format(v.DataView.dtSO!dvSO(v.Local.iBody).Qty_BO!FieldValString,"############0",v.Local.sQtyBO)		
+				f.Intrinsic.String.Build("{0},{1}",v.Local.sCsvLine,v.Local.sQtyBO,v.Local.sCsvLine)
+				f.Intrinsic.String.RPad(v.Local.sQtyBO," ",50,v.Local.sQtyBO)
+				
+				'Sales Order Line, Item Promise Date, Customer Number, Part, Qty BO
+				f.Intrinsic.String.Build("{0}{1}{2}{3}{4}{5}","",v.Local.sSOLine,v.Local.sItemPromiseDate,v.Local.sCustomer,v.Local.sPart,v.Local.sQtyBO,v.Local.sLine)
+				
+				f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sBody,v.Local.sLine,v.Ambient.NewLine,v.Local.sBody)
+				f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sCsvContent,v.Ambient.NewLine,v.Local.sCsvLine,v.Local.sCsvContent)
+			f.Intrinsic.Control.Next(v.Local.iBody)
+
+			'Build Subject
+			f.Intrinsic.String.Build("List of Due Sales Orders at {0}",v.Ambient.Now,v.Local.sSubject)
+			
+			'Build attach file name
+			f.Intrinsic.String.Build("{0}\{1}_{2}.csv",v.Local.sProjectPath,v.Local.sSalesPerson,v.Ambient.Date.FormatYYYYMMDD,v.Local.sFilePath)
+			f.Intrinsic.File.String2File(v.Local.sFilePath,v.Local.sCsvContent)
+			
+			'Send email
+			F.Global.Messaging.CreateEMMessage(v.Local.sSalesPersonEmail,v.Local.sSalesPersonName,v.Global.sSenderEmail,"PKC LIVE",v.Local.sSubject,v.Local.sBody,v.Local.sFilePath,False)
+			
+		f.Intrinsic.Control.Else
+			f.Intrinsic.String.Build("{0}{1}{2}:{3}",v.Local.sSalesPersonWithInvalidEmail,v.Ambient.NewLine,v.Local.sSalesPerson,v.Local.sSalesPersonEmail,v.Local.sSalesPersonWithInvalidEmail)
+		f.Intrinsic.Control.EndIf
+		
+	f.Intrinsic.Control.Next(v.Local.iCnt)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub("Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.Process.End
+
+Program.Sub.Check_Default.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+	v.Local.sProjectPath.Declare
+	v.Local.bExist.Declare
+	v.Local.sFilePath.Declare
+	v.Local.sContent.Declare
+	v.Local.bValidEmail.Declare
+	
+	'systems@4pkc.com
+	f.Intrinsic.String.Build("{0}\Custom\5415",v.Caller.BusintDir,v.Local.sProjectPath)
+	f.Intrinsic.File.DirExists(v.Local.sProjectPath,v.Local.bExist)
+	f.Intrinsic.Control.If(v.Local.bExist.Not)
+		f.Intrinsic.File.CreateDir(v.Local.sProjectPath)
+	f.Intrinsic.Control.EndIf
+	
+	f.Intrinsic.String.Build("{0}\ProjectSetting5415.txt",v.Local.sProjectPath,v.Local.sFilePath)
+	f.Intrinsic.File.Exists(v.Local.sFilePath,v.Local.bExist)
+	f.Intrinsic.Control.If(v.Local.bExist.Not)
+		f.Intrinsic.File.String2File(v.Local.sFilePath,"systems@4pkc.com")
+		v.Global.sSenderEmail.Set("systems@4pkc.com")
+	f.Intrinsic.Control.Else
+		f.Intrinsic.File.File2String(v.Local.sFilePath,v.Local.sContent)
+		f.Global.Messaging.IsAddressValid(v.Local.sContent.Trim,v.Local.bValidEmail)
+		f.Intrinsic.Control.If(v.Local.bValidEmail)
+			v.Global.sSenderEmail.Set(v.Local.sContent)
+		f.Intrinsic.Control.Else
+			f.Intrinsic.File.String2File(v.Local.sFilePath,"systems@4pkc.com")
+			v.Global.sSenderEmail.Set("systems@4pkc.com")	
+		f.Intrinsic.Control.EndIf
+	f.Intrinsic.Control.EndIf	
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub("Unload")
+F.Intrinsic.Control.EndTry
+Program.Sub.Check_Default.End
